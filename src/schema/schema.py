@@ -1,4 +1,6 @@
-from typing import Any, Literal, NotRequired
+# from typing import Any, Literal, NotRequired      # Python 3.11版本才引入NotRequired
+from typing import Any, Literal                     # Python 3.10版本替代方案
+from typing_extensions import NotRequired           # Python 3.10版本替代方案
 
 from pydantic import BaseModel, Field, SerializeAsAny
 from typing_extensions import TypedDict

@@ -1,4 +1,5 @@
-from enum import StrEnum
+# from enum import StrEnum    # 需要升级到Python 3.11才能支持
+from strenum import StrEnum   # Python 3.10的替代方案
 from json import loads
 from typing import Annotated, Any
 
