@@ -5,6 +5,8 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda, RunnableSerializable
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
+from langgraph.store.memory import InMemoryStore
+from langgraph.types import StreamWriter
 
 from agents.bg_task_agent.task import Task
 from core import get_model, settings
@@ -22,7 +24,7 @@ def wrap_model(model: BaseChatModel) -> RunnableSerializable[AgentState, AIMessa
         lambda state: state["messages"],
         name="StateModifier",
     )
-    return preprocessor | model
+    return preprocessor | model  # type: ignore[return-value]
 
 
 async def acall_model(state: AgentState, config: RunnableConfig) -> AgentState:
@@ -34,19 +36,19 @@ async def acall_model(state: AgentState, config: RunnableConfig) -> AgentState:
     return {"messages": [response]}
 
 
-async def bg_task(state: AgentState, config: RunnableConfig) -> AgentState:
-    task1 = Task("Simple task 1...")
-    task2 = Task("Simple task 2...")
+async def bg_task(state: AgentState, writer: StreamWriter) -> AgentState:
+    task1 = Task("Simple task 1...", writer)
+    task2 = Task("Simple task 2...", writer)
 
-    await task1.start(config=config)
+    task1.start()
     await asyncio.sleep(2)
-    await task2.start(config=config)
+    task2.start()
     await asyncio.sleep(2)
-    await task1.write_data(config=config, data={"status": "Still running..."})
+    task1.write_data(data={"status": "Still running..."})
     await asyncio.sleep(2)
-    await task2.finish(result="error", config=config, data={"output": 42})
+    task2.finish(result="error", data={"output": 42})
     await asyncio.sleep(2)
-    await task1.finish(result="success", config=config, data={"output": 42})
+    task1.finish(result="success", data={"output": 42})
     return {"messages": []}
 
 
@@ -61,4 +63,5 @@ agent.add_edge("model", END)
 
 bg_task_agent = agent.compile(
     checkpointer=MemorySaver(),
+    store=InMemoryStore(),
 )

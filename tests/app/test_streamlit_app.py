@@ -13,7 +13,7 @@ def test_app_simple_non_streaming(mock_agent_client):
     """Test the full app - happy path"""
     at = AppTest.from_file("../../src/streamlit_app.py").run()
 
-    WELCOME_START = "Hello! I'm an AI-powered research assistant"
+    WELCOME_START = "Hello! I'm an AI agent. Ask me anything!"
     PROMPT = "Know any jokes?"
     RESPONSE = "Sure! Here's a joke:"
 
@@ -36,7 +36,9 @@ def test_app_simple_non_streaming(mock_agent_client):
 
 def test_app_settings(mock_agent_client):
     """Test the full app - happy path"""
-    at = AppTest.from_file("../../src/streamlit_app.py").run()
+    at = AppTest.from_file("../../src/streamlit_app.py")
+    at.query_params["user_id"] = "1234"
+    at.run()
 
     PROMPT = "Know any jokes?"
     RESPONSE = "Sure! Here's a joke:"
@@ -64,7 +66,8 @@ def test_app_settings(mock_agent_client):
     mock_agent_client.ainvoke.assert_called_with(
         message=PROMPT,
         model=OpenAIModelName.GPT_4O_MINI,
-        thread_id="test session id",
+        thread_id=at.session_state.thread_id,
+        user_id="1234",
     )
     assert not at.exception
 
@@ -73,7 +76,6 @@ def test_app_thread_id_history(mock_agent_client):
     """Test the thread_id is generated"""
 
     at = AppTest.from_file("../../src/streamlit_app.py").run()
-    assert at.session_state.thread_id == "test session id"
 
     # Reset and set thread_id
     at = AppTest.from_file("../../src/streamlit_app.py")
@@ -159,4 +161,14 @@ async def test_app_init_error(mock_agent_client):
     assert at.chat_message[1].avatar == "user"
     assert at.chat_message[1].markdown[0].value == PROMPT
     assert at.error[0].value == "Error generating response: Error connecting to agent"
+    assert not at.exception
+
+
+def test_app_new_chat_btn(mock_agent_client):
+    at = AppTest.from_file("../../src/streamlit_app.py").run()
+    thread_id_a = at.session_state.thread_id
+
+    at.sidebar.button[0].click().run()
+
+    assert at.session_state.thread_id != thread_id_a
     assert not at.exception

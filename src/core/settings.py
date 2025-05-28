@@ -24,14 +24,17 @@ from schema.models import (
     GoogleModelName,
     GroqModelName,
     OllamaModelName,
+    OpenAICompatibleName,
     OpenAIModelName,
     Provider,
+    VertexAIModelName,
 )
 
 
 class DatabaseType(StrEnum):
     SQLITE = "sqlite"
     POSTGRES = "postgres"
+    MONGO = "mongo"
 
 
 def check_str_is_http(x: str) -> str:
@@ -58,6 +61,7 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: SecretStr | None = None
     ANTHROPIC_API_KEY: SecretStr | None = None
     GOOGLE_API_KEY: SecretStr | None = None
+    GOOGLE_APPLICATION_CREDENTIALS: SecretStr | None = None
     GROQ_API_KEY: SecretStr | None = None
     USE_AWS_BEDROCK: bool = False
     OLLAMA_MODEL: str | None = None
@@ -67,6 +71,11 @@ class Settings(BaseSettings):
     # If DEFAULT_MODEL is None, it will be set in model_post_init
     DEFAULT_MODEL: AllModelEnum | None = None  # type: ignore[assignment]
     AVAILABLE_MODELS: set[AllModelEnum] = set()  # type: ignore[assignment]
+
+    # Set openai compatible api, mainly used for proof of concept
+    COMPATIBLE_MODEL: str | None = None
+    COMPATIBLE_API_KEY: SecretStr | None = None
+    COMPATIBLE_BASE_URL: str | None = None
 
     OPENWEATHERMAP_API_KEY: SecretStr | None = None
 
@@ -89,13 +98,14 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str | None = None
     POSTGRES_PORT: int | None = None
     POSTGRES_DB: str | None = None
-    POSTGRES_POOL_SIZE: int = Field(
-        default=10, description="Maximum number of connections in the pool"
-    )
-    POSTGRES_MIN_SIZE: int = Field(
-        default=3, description="Minimum number of connections in the pool"
-    )
-    POSTGRES_MAX_IDLE: int = Field(default=5, description="Maximum number of idle connections")
+
+    # MongoDB Configuration
+    MONGO_HOST: str | None = None
+    MONGO_PORT: int | None = None
+    MONGO_DB: str | None = None
+    MONGO_USER: str | None = None
+    MONGO_PASSWORD: SecretStr | None = None
+    MONGO_AUTH_SOURCE: str | None = None
 
     # Azure OpenAI Settings
     AZURE_OPENAI_API_KEY: SecretStr | None = None
@@ -108,9 +118,11 @@ class Settings(BaseSettings):
     def model_post_init(self, __context: Any) -> None:
         api_keys = {
             Provider.OPENAI: self.OPENAI_API_KEY,
+            Provider.OPENAI_COMPATIBLE: self.COMPATIBLE_BASE_URL and self.COMPATIBLE_MODEL,
             Provider.DEEPSEEK: self.DEEPSEEK_API_KEY,
             Provider.ANTHROPIC: self.ANTHROPIC_API_KEY,
             Provider.GOOGLE: self.GOOGLE_API_KEY,
+            Provider.VERTEXAI: self.GOOGLE_APPLICATION_CREDENTIALS,
             Provider.GROQ: self.GROQ_API_KEY,
             Provider.AWS: self.USE_AWS_BEDROCK,
             Provider.OLLAMA: self.OLLAMA_MODEL,
@@ -127,6 +139,10 @@ class Settings(BaseSettings):
                     if self.DEFAULT_MODEL is None:
                         self.DEFAULT_MODEL = OpenAIModelName.GPT_4O_MINI
                     self.AVAILABLE_MODELS.update(set(OpenAIModelName))
+                case Provider.OPENAI_COMPATIBLE:
+                    if self.DEFAULT_MODEL is None:
+                        self.DEFAULT_MODEL = OpenAICompatibleName.OPENAI_COMPATIBLE
+                    self.AVAILABLE_MODELS.update(set(OpenAICompatibleName))
                 case Provider.DEEPSEEK:
                     if self.DEFAULT_MODEL is None:
                         self.DEFAULT_MODEL = DeepseekModelName.DEEPSEEK_CHAT
@@ -137,8 +153,12 @@ class Settings(BaseSettings):
                     self.AVAILABLE_MODELS.update(set(AnthropicModelName))
                 case Provider.GOOGLE:
                     if self.DEFAULT_MODEL is None:
-                        self.DEFAULT_MODEL = GoogleModelName.GEMINI_15_FLASH
+                        self.DEFAULT_MODEL = GoogleModelName.GEMINI_20_FLASH
                     self.AVAILABLE_MODELS.update(set(GoogleModelName))
+                case Provider.VERTEXAI:
+                    if self.DEFAULT_MODEL is None:
+                        self.DEFAULT_MODEL = VertexAIModelName.GEMINI_20_FLASH
+                    self.AVAILABLE_MODELS.update(set(VertexAIModelName))
                 case Provider.GROQ:
                     if self.DEFAULT_MODEL is None:
                         self.DEFAULT_MODEL = GroqModelName.LLAMA_31_8B
@@ -184,7 +204,7 @@ class Settings(BaseSettings):
                 case _:
                     raise ValueError(f"Unknown provider: {provider}")
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def BASE_URL(self) -> str:
         return f"http://{self.HOST}:{self.PORT}"

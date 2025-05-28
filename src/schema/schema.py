@@ -57,6 +57,11 @@ class UserInput(BaseModel):
         default=None,
         examples=["847c6285-8fc9-4560-a83f-4e6285809254"],
     )
+    user_id: str | None = Field(
+        description="User ID to persist and continue a conversation across multiple threads.",
+        default=None,
+        examples=["847c6285-8fc9-4560-a83f-4e6285809254"],
+    )
     agent_config: dict[str, Any] = Field(
         description="Additional configuration to pass through to the agent",
         default={},
@@ -133,7 +138,7 @@ class ChatMessage(BaseModel):
         print(self.pretty_repr())  # noqa: T201
 
 
-class Feedback(BaseModel):
+class Feedback(BaseModel):  # type: ignore[no-redef]
     """Feedback for a run, to record to LangSmith."""
 
     run_id: str = Field(

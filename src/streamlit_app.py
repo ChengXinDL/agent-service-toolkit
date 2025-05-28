@@ -1,12 +1,12 @@
 import asyncio
 import os
 import urllib.parse
+import uuid
 from collections.abc import AsyncGenerator
 
 import streamlit as st
 from dotenv import load_dotenv
 from pydantic import ValidationError
-from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 from client import AgentClient, AgentClientError
 from schema import ChatHistory, ChatMessage
@@ -25,6 +25,31 @@ from schema.task_data import TaskData, TaskDataStatus
 
 APP_TITLE = "Agent Service Toolkit"
 APP_ICON = "🧰"
+USER_ID_COOKIE = "user_id"
+
+
+def get_or_create_user_id() -> str:
+    """Get the user ID from session state or URL parameters, or create a new one if it doesn't exist."""
+    # Check if user_id exists in session state
+    if USER_ID_COOKIE in st.session_state:
+        return st.session_state[USER_ID_COOKIE]
+
+    # Try to get from URL parameters using the new st.query_params
+    if USER_ID_COOKIE in st.query_params:
+        user_id = st.query_params[USER_ID_COOKIE]
+        st.session_state[USER_ID_COOKIE] = user_id
+        return user_id
+
+    # Generate a new user_id if not found
+    user_id = str(uuid.uuid4())
+
+    # Store in session state for this session
+    st.session_state[USER_ID_COOKIE] = user_id
+
+    # Also add to URL parameters so it can be bookmarked/shared
+    st.query_params[USER_ID_COOKIE] = user_id
+
+    return user_id
 
 
 async def main() -> None:
@@ -51,6 +76,9 @@ async def main() -> None:
         await asyncio.sleep(0.1)
         st.rerun()
 
+    # Get or create user ID
+    user_id = get_or_create_user_id()
+
     if "agent_client" not in st.session_state:
         load_dotenv()
         agent_url = os.getenv("AGENT_URL")
@@ -70,7 +98,7 @@ async def main() -> None:
     if "thread_id" not in st.session_state:
         thread_id = st.query_params.get("thread_id")
         if not thread_id:
-            thread_id = get_script_run_ctx().session_id
+            thread_id = str(uuid.uuid4())
             messages = []
         else:
             try:
@@ -84,8 +112,16 @@ async def main() -> None:
     # Config options
     with st.sidebar:
         st.header(f"{APP_ICON} {APP_TITLE}")
+
         ""
         "Full toolkit for running an AI agent service built with LangGraph, FastAPI and Streamlit"
+        ""
+
+        if st.button(":material/chat: New Chat", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.thread_id = str(uuid.uuid4())
+            st.rerun()
+
         with st.popover(":material/settings: Settings", use_container_width=True):
             model_idx = agent_client.info.models.index(agent_client.info.default_model)
             model = st.selectbox("LLM to use", options=agent_client.info.models, index=model_idx)
@@ -97,6 +133,9 @@ async def main() -> None:
                 index=agent_idx,
             )
             use_streaming = st.toggle("Stream results", value=True)
+
+            # Display user ID (for debugging or user information)
+            st.text_input("User ID (read-only)", value=user_id, disabled=True)
 
         @st.dialog("Architecture")
         def architecture_dialog() -> None:
@@ -125,7 +164,10 @@ async def main() -> None:
             # if it's not localhost, switch to https by default
             if not st_base_url.startswith("https") and "localhost" not in st_base_url:
                 st_base_url = st_base_url.replace("http", "https")
-            chat_url = f"{st_base_url}?thread_id={st.session_state.thread_id}"
+            # Include both thread_id and user_id in the URL for sharing to maintain user identity
+            chat_url = (
+                f"{st_base_url}?thread_id={st.session_state.thread_id}&{USER_ID_COOKIE}={user_id}"
+            )
             st.markdown(f"**Chat URL:**\n```text\n{chat_url}\n```")
             st.info("Copy the above URL to share or revisit this chat")
 
@@ -141,7 +183,19 @@ async def main() -> None:
     messages: list[ChatMessage] = st.session_state.messages
 
     if len(messages) == 0:
-        WELCOME = "Hello! I'm an AI-powered research assistant with web search and a calculator. Ask me anything!"
+        match agent_client.agent:
+            case "chatbot":
+                WELCOME = "Hello! I'm a simple chatbot. Ask me anything!"
+            case "interrupt-agent":
+                WELCOME = "Hello! I'm an interrupt agent. Tell me your birthday and I will predict your personality!"
+            case "research-assistant":
+                WELCOME = "Hello! I'm an AI-powered research assistant with web search and a calculator. Ask me anything!"
+            case "rag-assistant":
+                WELCOME = """Hello! I'm an AI-powered Company Policy & HR assistant with access to AcmeTech's Employee Handbook.
+                I can help you find information about benefits, remote work, time-off policies, company values, and more. Ask me anything!"""
+            case _:
+                WELCOME = "Hello! I'm an AI agent. Ask me anything!"
+
         with st.chat_message("ai"):
             st.write(WELCOME)
 
@@ -162,6 +216,7 @@ async def main() -> None:
                     message=user_input,
                     model=model,
                     thread_id=st.session_state.thread_id,
+                    user_id=user_id,
                 )
                 await draw_messages(stream, is_new=True)
             else:
@@ -169,6 +224,7 @@ async def main() -> None:
                     message=user_input,
                     model=model,
                     thread_id=st.session_state.thread_id,
+                    user_id=user_id,
                 )
                 messages.append(response)
                 st.chat_message("ai").write(response.content)
@@ -233,6 +289,7 @@ async def draw_messages(
             st.error(f"Unexpected message type: {type(msg)}")
             st.write(msg)
             st.stop()
+
         match msg.type:
             # A message from the user, the easiest case
             case "human":
@@ -279,6 +336,7 @@ async def draw_messages(
                         # Expect one ToolMessage for each tool call.
                         for _ in range(len(call_results)):
                             tool_result: ChatMessage = await anext(messages_agen)
+
                             if tool_result.type != "tool":
                                 st.error(f"Unexpected ChatMessage type: {tool_result.type}")
                                 st.write(tool_result)
@@ -288,7 +346,8 @@ async def draw_messages(
                             # status container with the result
                             if is_new:
                                 st.session_state.messages.append(tool_result)
-                            status = call_results[tool_result.tool_call_id]
+                            if tool_result.tool_call_id:
+                                status = call_results[tool_result.tool_call_id]
                             status.write("Output:")
                             status.write(tool_result.content)
                             status.update(state="complete")

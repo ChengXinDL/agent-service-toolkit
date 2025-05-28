@@ -81,7 +81,7 @@ class LlamaGuard:
             print("GROQ_API_KEY not set, skipping LlamaGuard")
             self.model = None
             return
-        self.model = get_model(GroqModelName.LLAMA_GUARD_3_8B).with_config(tags=["llama_guard"])
+        self.model = get_model(GroqModelName.LLAMA_GUARD_4_12B).with_config(tags=["skip_stream"])
         self.prompt = PromptTemplate.from_template(llama_guard_instructions)
 
     def _compile_prompt(self, role: str, messages: list[AnyMessage]) -> str:
@@ -97,14 +97,14 @@ class LlamaGuard:
             return LlamaGuardOutput(safety_assessment=SafetyAssessment.SAFE)
         compiled_prompt = self._compile_prompt(role, messages)
         result = self.model.invoke([HumanMessage(content=compiled_prompt)])
-        return parse_llama_guard_output(result.content)
+        return parse_llama_guard_output(str(result.content))
 
     async def ainvoke(self, role: str, messages: list[AnyMessage]) -> LlamaGuardOutput:
         if self.model is None:
             return LlamaGuardOutput(safety_assessment=SafetyAssessment.SAFE)
         compiled_prompt = self._compile_prompt(role, messages)
         result = await self.model.ainvoke([HumanMessage(content=compiled_prompt)])
-        return parse_llama_guard_output(result.content)
+        return parse_llama_guard_output(str(result.content))
 
 
 if __name__ == "__main__":
