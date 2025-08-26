@@ -15,11 +15,10 @@ from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage, Human
 from langchain_core.runnables import RunnableConfig
 from langfuse import Langfuse  # type: ignore[import-untyped]
 from langfuse.callback import CallbackHandler  # type: ignore[import-untyped]
-from langgraph.pregel import Pregel
 from langgraph.types import Command, Interrupt
 from langsmith import Client as LangsmithClient
 
-from agents import DEFAULT_AGENT, get_agent, get_all_agent_info
+from agents import DEFAULT_AGENT, AgentGraph, get_agent, get_all_agent_info
 from core import settings
 from memory import initialize_database, initialize_store
 from schema import (
@@ -101,7 +100,7 @@ async def info() -> ServiceMetadata:
     )
 
 
-async def _handle_input(user_input: UserInput, agent: Pregel) -> tuple[dict[str, Any], UUID]:
+async def _handle_input(user_input: UserInput, agent: AgentGraph) -> tuple[dict[str, Any], UUID]:
     """
     Parse user input and handle any required interrupt resumption.
     Returns kwargs for agent invocation and the run_id.
@@ -170,7 +169,7 @@ async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMe
     # in interrupt-agent, or a tool step in research-assistant), it's omitted. Arguably,
     # you'd want to include it. You could update the API to return a list of ChatMessages
     # in that case.
-    agent: Pregel = get_agent(agent_id)
+    agent: AgentGraph = get_agent(agent_id)
     kwargs, run_id = await _handle_input(user_input, agent)
 
     try:
@@ -203,17 +202,23 @@ async def message_generator(
 
     This is the workhorse method for the /stream endpoint.
     """
-    agent: Pregel = get_agent(agent_id)
+    agent: AgentGraph = get_agent(agent_id)
     kwargs, run_id = await _handle_input(user_input, agent)
 
     try:
         # Process streamed events from the graph and yield messages over the SSE stream.
         async for stream_event in agent.astream(
-            **kwargs, stream_mode=["updates", "messages", "custom"]
+            **kwargs, stream_mode=["updates", "messages", "custom"], subgraphs=True
         ):
             if not isinstance(stream_event, tuple):
                 continue
-            stream_mode, event = stream_event
+            # Handle different stream event structures based on subgraphs
+            if len(stream_event) == 3:
+                # With subgraphs=True: (node_path, stream_mode, event)
+                _, stream_mode, event = stream_event
+            else:
+                # Without subgraphs: (stream_mode, event)
+                stream_mode, event = stream_event
             new_messages = []
             if stream_mode == "updates":
                 for node, updates in event.items():
@@ -229,19 +234,16 @@ async def message_generator(
                     update_messages = updates.get("messages", [])
                     # special cases for using langgraph-supervisor library
                     if node == "supervisor":
-                        # Get only the last AIMessage since supervisor includes all previous messages
-                        ai_messages = [msg for msg in update_messages if isinstance(msg, AIMessage)]
-                        if ai_messages:
-                            update_messages = [ai_messages[-1]]
+                        # Get only the last ToolMessage since is it added by the
+                        # langgraph lib and not actual AI output so it won't be an
+                        # independent event
+                        if isinstance(update_messages[-1], ToolMessage):
+                            update_messages = [update_messages[-1]]
+                        else:
+                            update_messages = []
+
                     if node in ("research_expert", "math_expert"):
-                        # By default the sub-agent output is returned as an AIMessage.
-                        # Convert it to a ToolMessage so it displays in the UI as a tool response.
-                        msg = ToolMessage(
-                            content=update_messages[0].content,
-                            name=node,
-                            tool_call_id="",
-                        )
-                        update_messages = [msg]
+                        update_messages = []
                     new_messages.extend(update_messages)
 
             if stream_mode == "custom":
@@ -375,7 +377,7 @@ def history(input: ChatHistoryInput) -> ChatHistory:
     Get chat history.
     """
     # TODO: Hard-coding DEFAULT_AGENT here is wonky
-    agent: Pregel = get_agent(DEFAULT_AGENT)
+    agent: AgentGraph = get_agent(DEFAULT_AGENT)
     try:
         state_snapshot = agent.get_state(
             config=RunnableConfig(configurable={"thread_id": input.thread_id})
