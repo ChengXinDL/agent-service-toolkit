@@ -109,7 +109,9 @@ async def _handle_input(user_input: UserInput, agent: AgentGraph) -> tuple[dict[
     thread_id = user_input.thread_id or str(uuid4())
     user_id = user_input.user_id or str(uuid4())
 
-    configurable = {"thread_id": thread_id, "model": user_input.model, "user_id": user_id}
+    configurable = {"thread_id": thread_id, "user_id": user_id}
+    if user_input.model is not None:
+        configurable["model"] = user_input.model
 
     callbacks = []
     if settings.LANGFUSE_TRACING:
@@ -119,7 +121,9 @@ async def _handle_input(user_input: UserInput, agent: AgentGraph) -> tuple[dict[
         callbacks.append(langfuse_handler)
 
     if user_input.agent_config:
-        if overlap := configurable.keys() & user_input.agent_config.keys():
+        # Check for reserved keys (including 'model' even if not in configurable)
+        reserved_keys = {"thread_id", "user_id", "model"}
+        if overlap := reserved_keys & user_input.agent_config.keys():
             raise HTTPException(
                 status_code=422,
                 detail=f"agent_config contains reserved keys: {overlap}",
@@ -372,14 +376,14 @@ async def feedback(feedback: Feedback) -> FeedbackResponse:
 
 
 @router.post("/history")
-def history(input: ChatHistoryInput) -> ChatHistory:
+async def history(input: ChatHistoryInput) -> ChatHistory:
     """
     Get chat history.
     """
     # TODO: Hard-coding DEFAULT_AGENT here is wonky
     agent: AgentGraph = get_agent(DEFAULT_AGENT)
     try:
-        state_snapshot = agent.get_state(
+        state_snapshot = await agent.aget_state(
             config=RunnableConfig(configurable={"thread_id": input.thread_id})
         )
         messages: list[AnyMessage] = state_snapshot.values["messages"]
