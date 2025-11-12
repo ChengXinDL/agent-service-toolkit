@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.responses import StreamingResponse
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage, HumanMessage, ToolMessage
@@ -18,7 +19,7 @@ from langfuse.callback import CallbackHandler  # type: ignore[import-untyped]
 from langgraph.types import Command, Interrupt
 from langsmith import Client as LangsmithClient
 
-from agents import DEFAULT_AGENT, AgentGraph, get_agent, get_all_agent_info
+from agents import DEFAULT_AGENT, AgentGraph, get_agent, get_all_agent_info, load_agent
 from core import settings
 from memory import initialize_database, initialize_store
 from schema import (
@@ -41,6 +42,11 @@ warnings.filterwarnings("ignore", category=LangChainBetaWarning)
 logger = logging.getLogger(__name__)
 
 
+def custom_generate_unique_id(route: APIRoute) -> str:
+    """Generate idiomatic operation IDs for OpenAPI client generation."""
+    return route.name
+
+
 def verify_bearer(
     http_auth: Annotated[
         HTTPAuthorizationCredentials | None,
@@ -57,8 +63,8 @@ def verify_bearer(
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
-    Configurable lifespan that initializes the appropriate database checkpointer and store
-    based on settings.
+    Configurable lifespan that initializes the appropriate database checkpointer, store,
+    and agents with async loading - for example for starting up MCP clients.
     """
     try:
         # Initialize both checkpointer (for short-term memory) and store (for long-term memory)
@@ -70,9 +76,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             if hasattr(store, "setup"):  # ignore: union-attr
                 await store.setup()
 
-            # Configure agents with both memory components
+            # Configure agents with both memory components and async loading
             agents = get_all_agent_info()
             for a in agents:
+                try:
+                    await load_agent(a.key)
+                    logger.info(f"Agent loaded: {a.key}")
+                except Exception as e:
+                    logger.error(f"Failed to load agent {a.key}: {e}")
+                    # Continue with other agents rather than failing startup
+
                 agent = get_agent(a.key)
                 # Set checkpointer for thread-scoped memory (conversation history)
                 agent.checkpointer = saver
@@ -80,11 +93,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 agent.store = store
             yield
     except Exception as e:
-        logger.error(f"Error during database/store initialization: {e}")
+        logger.error(f"Error during database/store/agents initialization: {e}")
         raise
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, generate_unique_id_function=custom_generate_unique_id)
 router = APIRouter(dependencies=[Depends(verify_bearer)])
 
 
@@ -157,7 +170,7 @@ async def _handle_input(user_input: UserInput, agent: AgentGraph) -> tuple[dict[
     return kwargs, run_id
 
 
-@router.post("/{agent_id}/invoke")
+@router.post("/{agent_id}/invoke", operation_id="invoke_with_agent_id")
 @router.post("/invoke")
 async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMessage:
     """
@@ -336,6 +349,7 @@ def _sse_response_example() -> dict[int | str, Any]:
     "/{agent_id}/stream",
     response_class=StreamingResponse,
     responses=_sse_response_example(),
+    operation_id="stream_with_agent_id",
 )
 @router.post("/stream", response_class=StreamingResponse, responses=_sse_response_example())
 async def stream(user_input: StreamInput, agent_id: str = DEFAULT_AGENT) -> StreamingResponse:
